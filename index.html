@@ -1,0 +1,205 @@
+<html>
+<head>
+<meta charset="UTF-8">
+<meta meta name="viewport" content="width=device-width, user-scalable=no" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<body>
+
+<div id='initial_alloc'>
+	<input type="checkbox" checked id="fixed_initial" onclick="updateHeapCreateUi()">Fixed initial memory size (if unchecked, probes largest available initial) <br>
+	<div id='fixed_memory_size'>
+		<input type="range" style="width:85%" min="1" max="32767" value="1" class="slider" id="memory_initial" oninput='updateHeapCreateUi(false)'><br>
+		<span id='memory_initial_text'>1 pages == 64 KB (65,536 B)</span> <br>
+	</div>
+
+	<input type="checkbox" id="maximum_memory" onclick="updateHeapCreateUi()">Specify maximum memory <br>
+	<div id='maximum_memory_size'>
+		<input type="range" style="width:85%" min="1" max="32767" value="1" class="slider" id="memory_maximum" oninput='updateHeapCreateUi(true)'> <br>
+		<span id='maximum_memory_text'>1 pages == 64 KB (65,536 B)</span> <br>
+	</div>
+
+	<input type="checkbox" id="shared_memory" onclick="updateHeapCreateUi()">Shared Memory <br>
+	<button type=button id='createWasm' onclick="createWasm()">new WebAssembly.Memory({ initial: 1 })</button>
+</div>
+
+<div id='alloc_more' style='display:none;'>
+	<div style='background-color: lightblue'>
+		<span id='created_wasm_memory_text'></span> <br>
+		wasm.buffer.byteLength == <span id=log></span> <br>
+	</div>
+	<a href='' onclick='location.reload();'>Reload</a>
+</div>
+
+<br><br>Uint8Arrays:  <span id=jslog>0</span> <br>
+<span id='wasmCreated' style='display:none'>
+	<button type=button onclick="growWasm()">Grow Wasm</button>
+</span>
+<button type=button onclick="growJS()">Allocate JS Memory</button>
+<br><br>Log:
+<div style='color: red' id='errorlog'></div>
+<div id='olderrorlog'></div>
+<script>
+let wasm = null;
+
+let log = document.querySelector('#log');
+let jslog = document.querySelector('#jslog');
+let errorlog = document.querySelector('#errorlog');
+let olderrorlog = document.querySelector('#olderrorlog');
+
+let jsMem = [];
+let jsTotal = 0;
+let jsMaxChunk = 0;
+
+function updateHeapCreateUi(moveInitialMemory) {
+	let fixed_initial = document.querySelector('#fixed_initial').checked;
+	let memory_initial = document.querySelector('#memory_initial').value;
+	let specify_maximum = document.querySelector('#maximum_memory').checked;
+	let memory_maximum = document.querySelector('#memory_maximum').value;
+	let shared_memory = document.querySelector('#shared_memory').checked;
+	if (moveInitialMemory) document.querySelector('#memory_initial').value = Math.min(memory_initial, memory_maximum);
+	else document.querySelector('#memory_maximum').value = Math.max(memory_initial, memory_maximum);
+
+	document.querySelector("#memory_initial_text").innerHTML = `${memory_initial} pages == ${formatBytes(memory_initial*65536)}`;
+	document.querySelector("#maximum_memory_text").innerHTML = `${memory_maximum} pages == ${formatBytes(memory_maximum*65536)}`;
+
+	document.querySelector('#fixed_memory_size').style.display = fixed_initial ? 'block' : 'none';
+	document.querySelector('#maximum_memory_size').style.display = specify_maximum ? 'block' : 'none';
+
+	document.querySelector('#created_wasm_memory_text').innerHTML = document.querySelector('#createWasm').innerHTML = `new WebAssembly.Memory({ initial: ${wasm?wasm.buffer.byteLength/65536:(fixed_initial?memory_initial:'?')}${specify_maximum?', maximum: '+memory_maximum:''}${shared_memory?', shared: true':''} });`;
+
+	document.querySelector('#alloc_more').style.display = document.querySelector('#wasmCreated').style.display = wasm ? 'inline' : 'none';
+	document.querySelector('#initial_alloc').style.display = wasm ? 'none' : 'inline';
+
+	logSize();
+}
+updateHeapCreateUi();
+
+function createWasm() {
+	clearError();
+
+	let fixed_initial = document.querySelector('#fixed_initial').checked;
+	let memory_initial = document.querySelector('#memory_initial').value;
+	let specify_maximum = document.querySelector('#maximum_memory').checked;
+	let memory_maximum = document.querySelector('#memory_maximum').value;
+	let shared_memory = document.querySelector('#shared_memory').checked;
+
+	var p = {
+		initial: memory_initial
+	};
+	if (specify_maximum) p.maximum = memory_maximum;
+	if (shared_memory) p.shared = true;
+
+	if (fixed_initial) {
+		try {
+			wasm = new WebAssembly.Memory(p);
+		} catch(e) {
+			logError(`${e} when creating WebAssembly.Memory(${JSON.stringify(p)})`);
+		}
+	} else {
+		for(let i = 32767; i >= 1 && !wasm; i -= 256) {
+			try {
+				p.initial = i;
+				wasm = new WebAssembly.Memory(p);
+        touchMemory(new Uint8Array(wasm.buffer));
+			} catch(e) {}
+		}
+	}
+	updateHeapCreateUi();
+}
+
+let nextGrow = 1;
+let growFailed = false;
+
+function formatBytes(b) {
+	function thousandsSeparate(b) {
+		b = b.toString();
+		let s = '';
+		let mod = 3 - (b.length % 3);
+		for(let i = 0; i < b.length; ++i) {
+			s += b[i];
+			if (i + 1 < b.length && ++mod % 3 == 0) s += ',';
+		}
+		return s;
+	}
+	function shrink(b) {
+		if (b > 1000*1024*1024) return (b / (1024*1024*1024)).toFixed(4) + ' GB';
+		if (b > 1000*1024) return (b / (1024*1024)).toFixed(3) + ' MB';
+		if (b > 1024) return (b / 1024).toFixed(2) + ' KB';
+		return b + ' B';
+	}
+	return `${shrink(b)} (${thousandsSeparate(b)} B)`;
+}
+
+function clearError() {
+	if (errorlog.innerHTML) {
+		olderrorlog.innerHTML = errorlog.innerHTML + olderrorlog.innerHTML;
+		errorlog.innerHTML = '';
+	}
+}
+
+function logError(s) {
+	errorlog.innerHTML = s + '<br>' + errorlog.innerHTML;
+}
+
+function logSize() {
+	if (wasm) log.innerHTML = `${formatBytes(wasm.buffer.byteLength)}`;
+	jslog.innerHTML = `${formatBytes(jsTotal)} in ${jsMem.length} chunks, max chunk ${formatBytes(jsMaxChunk)}`;
+}
+
+logSize();
+
+function touchMemory(arr) {
+	for(let i = 0; i < arr.length; i += 4096) {
+		arr[i] = i;
+	}
+}
+// -- Wasm memory growth --
+
+function growWasm() {
+	clearError();
+	while(nextGrow >= 1) {
+		try {
+			wasm.grow(nextGrow);
+			touchMemory(new Uint8Array(wasm.buffer));
+			if (!growFailed) nextGrow *= 2;
+			break;
+		} catch(e) {
+			growFailed = true;
+			logError(`${e} when .grow()ing wasm heap by another ${formatBytes(nextGrow*65536)}`);
+			nextGrow /= 2;
+		}
+	}
+	nextGrow = Math.max(nextGrow, 1);
+	logSize();
+}
+
+// -- JS memory growth --
+
+let nextJsGrow = 65536;
+let jsGrowFailed = false;
+
+function growJS() {
+	clearError();
+	while(nextJsGrow >= 1) {
+		try {
+			let ab = new Uint8Array(nextJsGrow);
+			touchMemory(ab);
+			jsMem.push(ab);
+			jsTotal += ab.length;
+			jsMaxChunk = Math.max(jsMaxChunk, ab.length);
+			if (!jsGrowFailed) nextJsGrow = Math.min(nextJsGrow*2, 2*1024*1024*1024-1);
+			break;
+		} catch(e) {
+			jsGrowFailed = true;
+			logError(`${e} when allocating JS arraybuffer of size ${formatBytes(nextJsGrow)}`);
+			nextJsGrow /= 2;
+		}
+	}
+	logSize();
+}
+
+</script>
+</body>
+</html>
